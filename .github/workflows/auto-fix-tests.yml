@@ -1,1 +1,87 @@
+name: 🛠️ Gemma 4 — Auto Fix Failing Tests
 
+on:
+  workflow_run:
+    workflows: ["CI", "Tests", "Test Suite"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      test_command:
+        description: "Test command to run"
+        default: "npm test"
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  auto-fix:
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install google-genai requests
+
+      - name: 🔎 Detect language & install deps
+        id: setup
+        run: |
+          if [ -f "package.json" ]; then
+            echo "lang=node" >> $GITHUB_OUTPUT
+            npm install --silent 2>/dev/null || true
+          elif [ -f "requirements.txt" ]; then
+            echo "lang=python" >> $GITHUB_OUTPUT
+            pip install -r requirements.txt --quiet 2>/dev/null || true
+          elif [ -f "Cargo.toml" ]; then
+            echo "lang=rust" >> $GITHUB_OUTPUT
+          elif [ -f "go.mod" ]; then
+            echo "lang=go" >> $GITHUB_OUTPUT
+          else
+            echo "lang=unknown" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 🧪 Run tests & capture failures
+        id: run-tests
+        run: |
+          TEST_CMD="${{ github.event.inputs.test_command || 'npm test 2>&1 || python -m pytest 2>&1 || go test ./... 2>&1' }}"
+          set +e
+          OUTPUT=$(eval "$TEST_CMD" 2>&1 | tail -200)
+          EXIT_CODE=$?
+          echo "$OUTPUT" > /tmp/test_output.txt
+          echo "exit_code=$EXIT_CODE" >> $GITHUB_OUTPUT
+          echo "Test output saved"
+
+      - name: 🤖 Auto-fix with Gemma 4
+        if: steps.run-tests.outputs.exit_code != '0'
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          TASK: "Fix failing tests"
+          ISSUE_NUMBER: ""
+          PR_NUMBER: ""
+          TRIGGER_TYPE: "auto_fix_tests"
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          # Inject test output into task
+          TEST_OUTPUT=$(cat /tmp/test_output.txt)
+          export TASK="The following tests are failing. Analyze the errors, find the root cause in the code, and fix them:
+
+          \`\`\`
+          $TEST_OUTPUT
+          \`\`\`
+
+          After fixing, run the tests again to verify they pass. Then create a PR with the fix."
+          python agent/agent.py
