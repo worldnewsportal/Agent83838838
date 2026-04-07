@@ -518,48 +518,23 @@ Please begin by exploring the repository structure, then proceed to complete the
         parts      = candidate.content.parts if candidate.content else []
 
         # Add model response to history
-        messages.append({"role": "model", "parts": [p._pb for p in parts]})
+        # Add model response to history - استخدم content مباشرة
+messages.append(response.candidates[0].content)
 
-        # Process parts
-        tool_results  = []
-        has_tool_call = False
-        done          = False
+# ...
 
-        for part in parts:
-            if hasattr(part, "text") and part.text:
-                log(f"💭 Agent: {part.text[:300]}")
+tool_results.append(
+    types.Part.from_function_response(
+        name=name,
+        response={"result": result}
+    )
+)
 
-            if hasattr(part, "function_call") and part.function_call:
-                has_tool_call = True
-                fc   = part.function_call
-                name = fc.name
-                args = dict(fc.args)
-
-                all_tool_calls.append({"tool": name, "args": args})
-
-                # Execute tool
-                result = execute_tool(name, args)
-                log(f"   → {str(result)[:200]}")
-
-                # Check if finished
-                if result.startswith("__DONE__:"):
-                    final_summary = result[9:]
-                    done = True
-                    break
-
-                tool_results.append({
-                    "function_response": {
-                        "name": name,
-                        "response": {"result": result}
-                    }
-                })
-
-        if done:
-            break
-
-        # Feed tool results back
-        if tool_results:
-            messages.append({"role": "user", "parts": tool_results})
+# Feed tool results back
+if tool_results:
+    messages.append(
+        types.Content(role="tool", parts=tool_results)
+    )
         elif not has_tool_call:
             # No tool call and no finish — agent is done reasoning
             log("✅ Agent completed reasoning")
